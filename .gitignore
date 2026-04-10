@@ -1,0 +1,22 @@
+# Maven build output
+target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.classpath
+*.project
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# RDS / DocumentDB CA bundle (downloaded locally, not committed)
+global-bundle.pem
+*.pem
+
+# Any local env file if created
+.env
+*.env
