@@ -1,48 +1,60 @@
 package com.gsv.benchmark.data;
 
-import com.gsv.benchmark.model.AuditLog;
-import com.gsv.benchmark.model.AuditLog.AuditEntry;
-import com.gsv.benchmark.model.UserProfile;
-import com.gsv.benchmark.model.UserProfile.*;
+import com.gsv.benchmark.model.GoldenPerson;
+import com.gsv.benchmark.model.GoldenPerson.*;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 /**
- * Generates synthetic user profiles and audit logs for benchmarking.
- * Uses predefined value arrays to avoid external Faker dependencies and
- * ensure predictable, reproducible data distributions.
+ * Generates synthetic MDM golden person records for benchmarking.
+ *
+ * <p>Design choices for meaningful benchmark results:
+ * <ul>
+ *   <li><b>SSN pool</b> — 1,000 values shared across 100 k records, giving
+ *       ~100 matches per SSN value so Q3 / Q8 return real result sets.</li>
+ *   <li><b>Rule IDs</b> — RULE_001 … RULE_010 (uniform), ~10 k records each.</li>
+ *   <li><b>City weights</b> — population-weighted; "New York" ≈ 12 % for Q4.</li>
+ *   <li><b>mastered_date_ts</b> — uniform over the past two years so the
+ *       Q6 "last 12 months" filter returns ~50 % of records.</li>
+ *   <li><b>prior_values</b> — 0–3 historical demographic snapshots and 0–2
+ *       per address, each referencing SSNs / cities from the shared pools
+ *       so Q8 / Q9 history queries hit real data.</li>
+ * </ul>
  */
 public class DataGenerator {
 
     private static final Random RNG = new Random(42);
 
     // ------------------------------------------------------------------
-    // Reference data
+    // Reference data — names
     // ------------------------------------------------------------------
 
     private static final String[] FIRST_NAMES = {
-        "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry",
-        "Iris", "Jack", "Karen", "Liam", "Mia", "Noah", "Olivia", "Paul",
-        "Quinn", "Rachel", "Sam", "Tara", "Uma", "Victor", "Wendy", "Xander",
-        "Yara", "Zoe", "Aaron", "Beth", "Carl", "Dani"
+        "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda",
+        "William", "Barbara", "David", "Elizabeth", "Richard", "Susan", "Joseph", "Jessica",
+        "Thomas", "Sarah", "Charles", "Karen", "Christopher", "Lisa", "Daniel", "Nancy",
+        "Matthew", "Betty", "Anthony", "Margaret", "Mark", "Sandra", "Donald", "Ashley",
+        "Steven", "Dorothy", "Paul", "Kimberly", "Andrew", "Emily", "Kenneth", "Donna"
     };
 
     private static final String[] LAST_NAMES = {
-        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller",
-        "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez",
-        "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin",
-        "Lee", "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark",
-        "Ramirez", "Lewis", "Robinson"
+        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+        "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
+        "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson",
+        "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson",
+        "Walker", "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen",
+        "Hill", "Flores", "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera",
+        "Campbell", "Mitchell", "Carter", "Roberts"
     };
 
-    private static final String[] EMAIL_DOMAINS = {
-        "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
-        "icloud.com", "proton.me", "example.com"
-    };
+    // ------------------------------------------------------------------
+    // Reference data — cities (city, state, zipcode, weight / 100)
+    // ------------------------------------------------------------------
 
-    // City weights: city | state | zip | weight (sum=100)
     private static final Object[][] CITIES = {
         {"New York",      "NY", "10001", 12},
         {"Los Angeles",   "CA", "90001", 10},
@@ -51,7 +63,7 @@ public class DataGenerator {
         {"Phoenix",       "AZ", "85001",  6},
         {"Philadelphia",  "PA", "19101",  5},
         {"San Antonio",   "TX", "78201",  5},
-        {"San Diego",     "CA", "92101",  5},
+        {"San Diego",     "CA", "92101",  4},
         {"Dallas",        "TX", "75201",  5},
         {"San Jose",      "CA", "95101",  4},
         {"Austin",        "TX", "78701",  4},
@@ -63,10 +75,11 @@ public class DataGenerator {
         {"San Francisco", "CA", "94101",  3},
         {"Seattle",       "WA", "98101",  3},
         {"Denver",        "CO", "80201",  3},
-        {"Boston",        "MA", "02101",  3}
+        {"Boston",        "MA", "02101",  4}
     };
 
     private static final int[] CITY_CUMULATIVE;
+
     static {
         CITY_CUMULATIVE = new int[CITIES.length];
         int sum = 0;
@@ -76,159 +89,204 @@ public class DataGenerator {
         }
     }
 
-    private static final String[] TIERS = {"basic", "premium", "enterprise"};
-    // cumulative weights: basic=40, premium=75, enterprise=100
-    private static final int[] TIER_WEIGHTS = {40, 75, 100};
+    // ------------------------------------------------------------------
+    // Reference data — SSN pool (1 000 values → ~100 matches per SSN in 100 k records)
+    // ------------------------------------------------------------------
 
-    private static final String[] ALL_TAGS = {
-        "verified", "early_adopter", "beta_tester", "power_user", "referral"
+    private static final String[] SSN_POOL;
+
+    static {
+        SSN_POOL = new String[1_000];
+        // Use a separate seeded random so the pool is always the same regardless
+        // of how many records have been generated before.
+        Random ssnRng = new Random(7);
+        for (int i = 0; i < SSN_POOL.length; i++) {
+            SSN_POOL[i] = String.format("%03d-%02d-%04d",
+                    100 + ssnRng.nextInt(800),   // area 100–899 (avoids reserved ranges)
+                    10  + ssnRng.nextInt(89),    // group 10–98
+                    1000 + ssnRng.nextInt(8999)  // serial 1000–9998
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Reference data — rules and address types
+    // ------------------------------------------------------------------
+
+    // 10 rule IDs — uniform distribution gives ~10 k records each
+    private static final String[] RULE_IDS = {
+        "RULE_001", "RULE_002", "RULE_003", "RULE_004", "RULE_005",
+        "RULE_006", "RULE_007", "RULE_008", "RULE_009", "RULE_010"
     };
 
-    private static final String[] ALL_INTERESTS = {
-        "technology", "travel", "cooking", "sports", "music",
-        "gaming", "fashion", "finance", "health", "education"
+    private static final String[] RULE_VERSIONS = {"v1.0", "v1.1", "v2.0", "v2.1", "v3.0"};
+
+    private static final String[] ADDRESS_TYPES  = {"PRIMARY", "SECONDARY", "BILLING"};
+
+    private static final String[] STREET_NAMES = {
+        "Main St", "Oak Ave", "Maple Dr", "Cedar Ln", "Pine Rd", "Elm St",
+        "Washington Blvd", "Park Ave", "Lake Dr", "River Rd", "Hill St",
+        "Forest Way", "Sunset Blvd", "Highland Ave", "Meadow Ln"
     };
-
-    private static final String[] ALL_LANGUAGES = {"en", "es", "fr", "de", "pt", "zh", "ja"};
-
-    private static final String[] CURRENCIES    = {"USD", "EUR", "GBP", "CAD"};
-    private static final String[] PAY_METHODS   = {"credit_card", "debit_card", "paypal", "bank_transfer"};
-    private static final String[] THEMES        = {"dark", "light", "system"};
-    private static final String[] REFERRALS     = {"organic", "social", "referral", "ad", "email"};
 
     // ------------------------------------------------------------------
     // Public API
     // ------------------------------------------------------------------
 
-    public static List<UserProfile> generateUsers(int count) {
-        List<UserProfile> users = new ArrayList<>(count);
+    /** Generates {@code count} synthetic MDM golden person records. */
+    public static List<GoldenPerson> generatePersons(int count) {
+        List<GoldenPerson> persons = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            users.add(buildUser());
+            persons.add(buildPerson());
         }
-        return users;
+        return persons;
+    }
+
+    // ------------------------------------------------------------------
+    // Exposed constants for benchmark query parameter binding
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns an SSN that is guaranteed to exist in generated data.
+     * Used as the exact-match parameter for Q3 and the history search Q8.
+     */
+    public static String sampleSsn() {
+        return SSN_POOL[0];   // always "the first SSN in the pool"
     }
 
     /**
-     * Generates one {@link AuditLog} per user.
-     * Each tracked field gets 2–4 history entries spanning ~180 days,
-     * with the final entry matching the current golden-record value.
+     * Returns a city guaranteed to appear in address prior_values.
+     * Used as the history search parameter for Q9.
      */
-    public static List<AuditLog> generateAuditLogs(List<UserProfile> users) {
-        List<AuditLog> logs = new ArrayList<>(users.size());
-        for (UserProfile u : users) {
-            logs.add(buildAuditLog(u));
-        }
-        return logs;
+    public static String samplePriorCity() {
+        return (String) CITIES[2][0];  // "Chicago" — 8 % weight
     }
 
     // ------------------------------------------------------------------
-    // Builders
+    // Builder
     // ------------------------------------------------------------------
 
-    private static UserProfile buildUser() {
-        UserProfile p = new UserProfile();
-        p.setId(UUID.randomUUID().toString());
-        p.setName(pick(FIRST_NAMES) + " " + pick(LAST_NAMES));
-        p.setEmail(p.getName().toLowerCase().replace(" ", ".") + RNG.nextInt(999)
-                   + "@" + pick(EMAIL_DOMAINS));
-        p.setAge(18 + RNG.nextInt(53));  // 18–70
-        p.setSubscriptionTier(pickWeighted(TIERS, TIER_WEIGHTS));
+    private static GoldenPerson buildPerson() {
+        GoldenPerson p = new GoldenPerson();
 
-        Object[] city = pickCity();
-        p.setAddress(new Address((String) city[0], (String) city[1], (String) city[2]));
+        String pid = UUID.randomUUID().toString();
+        String cid = UUID.randomUUID().toString();
+        p.setGlobalPid(pid);
+        p.setGlobalCid(cid);
+        p.setId(pid + "|" + cid);
 
-        p.setTags(randomSubset(ALL_TAGS, 0, 3));
-        p.setPreferences(new Preferences(
-            pick(THEMES),
-            pick(ALL_LANGUAGES),
-            RNG.nextBoolean()
-        ));
+        // mastered_date_ts — uniform over last 2 years (Q6 uses last-12-months filter → ~50 %)
+        Instant masteredInstant = randomInstantWithinDays(730);
+        p.setMasteredDateTs(isoTs(masteredInstant));
 
-        Billing billing = new Billing();
-        billing.setAccountBalance(Math.round(RNG.nextDouble() * 10_000 * 100.0) / 100.0);
-        billing.setCurrency(pick(CURRENCIES));
-        billing.setCreditScore(580 + RNG.nextInt(271));  // 580–850
-        billing.setPaymentMethod(pick(PAY_METHODS));
-        Object[] billCity = pickCity();
-        billing.setBillingAddress(
-            new Address((String) billCity[0], (String) billCity[1], (String) billCity[2]));
-        p.setBilling(billing);
-
-        Social social = new Social();
-        social.setInterests(randomSubset(ALL_INTERESTS, 2, 5));
-        social.setLanguagesSpoken(randomSubset(ALL_LANGUAGES, 1, 3));
-        social.setFollowersCount(RNG.nextInt(10_001));
-        social.setFollowingCount(RNG.nextInt(1_001));
-        social.setReferralSource(pick(REFERRALS));
-        p.setSocial(social);
+        p.setDemographic(buildDemographic(masteredInstant));
+        p.setAddress(buildAddresses(masteredInstant));
 
         return p;
     }
 
-    private static AuditLog buildAuditLog(UserProfile current) {
-        // Anchor timestamps: up to 180 days ago → now
-        Instant now = Instant.now();
-        int historyEntries = 2 + RNG.nextInt(3); // 2–4 entries per field
+    // ------------------------------------------------------------------
+    // Demographic builder
+    // ------------------------------------------------------------------
 
-        Map<String, List<AuditEntry>> auditData = new LinkedHashMap<>();
-
-        // subscription_tier history
-        auditData.put("subscription_tier",
-            buildHistory(historyEntries, now, current.getSubscriptionTier(),
-                () -> pickWeighted(TIERS, TIER_WEIGHTS)));
-
-        // age history (birthday may fall in the window)
-        auditData.put("age",
-            buildHistory(historyEntries, now, current.getAge(),
-                () -> 18 + RNG.nextInt(53)));
-
-        // address_city history
-        auditData.put("address_city",
-            buildHistory(historyEntries, now, current.getAddress().getCity(),
-                () -> (String) pickCity()[0]));
-
-        // billing_credit_score history
-        auditData.put("billing_credit_score",
-            buildHistory(historyEntries, now, current.getBilling().getCreditScore(),
-                () -> 580 + RNG.nextInt(271)));
-
-        // billing_account_balance history
-        auditData.put("billing_account_balance",
-            buildHistory(historyEntries, now, current.getBilling().getAccountBalance(),
-                () -> Math.round(RNG.nextDouble() * 10_000 * 100.0) / 100.0));
-
-        // tags history (each entry is a List<String>)
-        List<AuditEntry> tagHistory = new ArrayList<>();
-        for (int i = 0; i < historyEntries - 1; i++) {
-            tagHistory.add(new AuditEntry(
-                randomSubset(ALL_TAGS, 0, 3),
-                pastTimestamp(now, 180 - (i * (180 / historyEntries)))
-            ));
-        }
-        tagHistory.add(new AuditEntry(current.getTags(), isoTimestamp(now)));
-        auditData.put("tags", tagHistory);
-
-        AuditLog log = new AuditLog();
-        log.setUserId(current.getId());
-        log.setAuditData(auditData);
-        return log;
+    private static Demographic buildDemographic(Instant masteredInstant) {
+        Demographic d = new Demographic();
+        d.setFirstName(pick(FIRST_NAMES));
+        d.setLastName(pick(LAST_NAMES));
+        d.setDateOfBirth(randomDob());
+        d.setSsn(pick(SSN_POOL));
+        d.setMasteredDateTs(isoTs(masteredInstant));
+        d.setRuleId(pick(RULE_IDS));
+        d.setRuleVersion(pick(RULE_VERSIONS));
+        d.setPriorValues(buildDemographicHistory(masteredInstant));
+        return d;
     }
 
     /**
-     * Builds a time-ordered list of audit entries for a single scalar field.
-     * The last entry always equals {@code currentValue}.
+     * Generates 0–3 prior demographic snapshots (oldest first).
+     * Each prior snapshot uses an SSN from the shared pool so Q8 returns results.
      */
-    private static <T> List<AuditEntry> buildHistory(
-            int count, Instant now, T currentValue, java.util.function.Supplier<T> randomValue) {
-
-        List<AuditEntry> entries = new ArrayList<>(count);
-        int daysSpan = 180;
-        for (int i = 0; i < count - 1; i++) {
-            int daysAgo = daysSpan - (i * (daysSpan / count));
-            entries.add(new AuditEntry(randomValue.get(), pastTimestamp(now, daysAgo)));
+    private static List<DemographicHistory> buildDemographicHistory(Instant latestInstant) {
+        int count = RNG.nextInt(4);   // 0, 1, 2, or 3 prior entries
+        List<DemographicHistory> history = new ArrayList<>(count);
+        Instant cursor = latestInstant;
+        for (int i = count; i > 0; i--) {
+            // Each step goes further into the past
+            cursor = cursor.minus(30 + RNG.nextInt(180), ChronoUnit.DAYS);
+            DemographicHistory h = new DemographicHistory();
+            h.setFirstName(pick(FIRST_NAMES));
+            h.setLastName(pick(LAST_NAMES));
+            h.setDateOfBirth(randomDob());
+            h.setSsn(pick(SSN_POOL));           // from shared pool → Q8 hits
+            h.setMasteredDateTs(isoTs(cursor));
+            h.setRuleId(pick(RULE_IDS));
+            h.setRuleVersion(pick(RULE_VERSIONS));
+            h.setLostAgainstRule(pick(RULE_IDS));
+            history.add(0, h);   // prepend so list is oldest-first
         }
-        entries.add(new AuditEntry(currentValue, isoTimestamp(now)));
-        return entries;
+        return history;
+    }
+
+    // ------------------------------------------------------------------
+    // Address builders
+    // ------------------------------------------------------------------
+
+    /**
+     * Generates 1–3 addresses. PRIMARY is always included first;
+     * SECONDARY and BILLING are added with 40 % and 25 % probability.
+     */
+    private static List<GoldenPerson.Address> buildAddresses(Instant masteredInstant) {
+        List<GoldenPerson.Address> addresses = new ArrayList<>();
+        addresses.add(buildAddress("PRIMARY", masteredInstant));
+        if (RNG.nextInt(100) < 40) addresses.add(buildAddress("SECONDARY", masteredInstant));
+        if (RNG.nextInt(100) < 25) addresses.add(buildAddress("BILLING",   masteredInstant));
+        return addresses;
+    }
+
+    private static GoldenPerson.Address buildAddress(String addressType, Instant masteredInstant) {
+        Object[] cityRow = pickCity();
+
+        GoldenPerson.Address a = new GoldenPerson.Address();
+        a.setAddressType(addressType);
+        a.setAddress1(randomStreetAddress());
+        a.setAddress2(RNG.nextInt(100) < 20 ? "Apt " + (100 + RNG.nextInt(900)) : "");
+        a.setCity((String)  cityRow[0]);
+        a.setState((String) cityRow[1]);
+        a.setZipcode((String) cityRow[2]);
+        a.setCountry("US");
+        a.setMasteredDateTs(isoTs(masteredInstant));
+        a.setRuleId(pick(RULE_IDS));
+        a.setRuleVersion(pick(RULE_VERSIONS));
+        a.setPriorValues(buildAddressHistory(addressType, masteredInstant));
+        return a;
+    }
+
+    /**
+     * Generates 0–2 prior address snapshots (oldest first).
+     * Cities are drawn from the shared city pool so Q9 returns results.
+     */
+    private static List<AddressHistory> buildAddressHistory(String addressType, Instant latestInstant) {
+        int count = RNG.nextInt(3);   // 0, 1, or 2 prior entries
+        List<AddressHistory> history = new ArrayList<>(count);
+        Instant cursor = latestInstant;
+        for (int i = count; i > 0; i--) {
+            cursor = cursor.minus(30 + RNG.nextInt(180), ChronoUnit.DAYS);
+            Object[] cityRow = pickCity();
+            AddressHistory h = new AddressHistory();
+            h.setAddressType(addressType);
+            h.setAddress1(randomStreetAddress());
+            h.setAddress2("");
+            h.setCity((String)  cityRow[0]);
+            h.setState((String) cityRow[1]);
+            h.setZipcode((String) cityRow[2]);
+            h.setCountry("US");
+            h.setMasteredDateTs(isoTs(cursor));
+            h.setRuleId(pick(RULE_IDS));
+            h.setRuleVersion(pick(RULE_VERSIONS));
+            h.setLostAgainstRule(pick(RULE_IDS));
+            history.add(0, h);   // oldest first
+        }
+        return history;
     }
 
     // ------------------------------------------------------------------
@@ -240,34 +298,36 @@ public class DataGenerator {
     }
 
     private static Object[] pickCity() {
-        int roll = RNG.nextInt(100);
+        int roll = RNG.nextInt(CITY_CUMULATIVE[CITY_CUMULATIVE.length - 1]);
         for (int i = 0; i < CITY_CUMULATIVE.length; i++) {
             if (roll < CITY_CUMULATIVE[i]) return CITIES[i];
         }
         return CITIES[CITIES.length - 1];
     }
 
-    private static String pickWeighted(String[] options, int[] cumulative) {
-        int roll = RNG.nextInt(cumulative[cumulative.length - 1]);
-        for (int i = 0; i < cumulative.length; i++) {
-            if (roll < cumulative[i]) return options[i];
-        }
-        return options[options.length - 1];
+    private static String randomStreetAddress() {
+        return (100 + RNG.nextInt(9900)) + " " + pick(STREET_NAMES);
     }
 
-    private static List<String> randomSubset(String[] source, int minCount, int maxCount) {
-        int count = minCount + RNG.nextInt(maxCount - minCount + 1);
-        List<String> shuffled = new ArrayList<>(Arrays.asList(source));
-        Collections.shuffle(shuffled, RNG);
-        return new ArrayList<>(shuffled.subList(0, Math.min(count, shuffled.size())));
+    /** Random date of birth between 18 and 80 years ago. */
+    private static String randomDob() {
+        LocalDate today = LocalDate.now();
+        int yearsAgo = 18 + RNG.nextInt(63);
+        int dayOffset = RNG.nextInt(365);
+        return today.minusYears(yearsAgo).minusDays(dayOffset)
+                    .format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
 
-    private static String pastTimestamp(Instant now, int daysAgo) {
-        return isoTimestamp(now.minus(daysAgo, ChronoUnit.DAYS)
-                               .minus(RNG.nextInt(86_400), ChronoUnit.SECONDS));
+    /**
+     * Returns an Instant chosen uniformly at random within the last
+     * {@code days} calendar days.
+     */
+    private static Instant randomInstantWithinDays(int days) {
+        long offsetSeconds = (long) (RNG.nextDouble() * days * 86_400);
+        return Instant.now().minus(offsetSeconds, ChronoUnit.SECONDS);
     }
 
-    private static String isoTimestamp(Instant instant) {
-        return instant.toString();   // e.g. "2024-01-15T10:30:00Z"
+    private static String isoTs(Instant instant) {
+        return instant.truncatedTo(ChronoUnit.SECONDS).toString();
     }
 }

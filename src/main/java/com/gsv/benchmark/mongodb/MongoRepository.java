@@ -1,8 +1,7 @@
 package com.gsv.benchmark.mongodb;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.gsv.benchmark.model.AuditLog;
-import com.gsv.benchmark.model.UserProfile;
+import com.gsv.benchmark.model.GoldenPerson;
 import com.mongodb.client.*;
 import com.mongodb.client.model.*;
 import org.bson.Document;
@@ -14,36 +13,50 @@ import java.util.Map;
 import static com.mongodb.client.model.Filters.*;
 
 /**
- * Handles all MongoDB operations: collection management, seeding, index creation,
- * and the nine benchmark queries.
+ * All MongoDB / DocumentDB operations for the MDM benchmark.
  *
- * <p>Accepts a pre-built {@link MongoClient} so that the caller (via
- * {@link com.gsv.benchmark.config.AppConfig}) can handle profile-specific
- * client setup (plain URI vs. TLS + DocumentDB settings).
+ * <h3>Collection: mdm_golden_person</h3>
+ * <pre>
+ *   _id              "global_pid|global_cid"   (String — composite PK)
+ *   global_pid       String
+ *   global_cid       String
+ *   mastered_date_ts String  (ISO-8601)
+ *   demographic      { first_name, last_name, date_of_birth, ssn,
+ *                      mastered_date_ts, rule_id, rule_version,
+ *                      prior_values: [...] }
+ *   address          [{ address_type, address1, address2, city, state,
+ *                       zipcode, country, mastered_date_ts,
+ *                       rule_id, rule_version, prior_values: [...] }]
+ * </pre>
  *
- * <p>Collection {@code users}: documents mirror the UserProfile POJO, with
- * {@code _id} set to the user's UUID string so it matches {@code users.id} in PG.
- * <p>Collection {@code user_audit_logs}: documents have {@code _id = userId} and
- * a nested {@code audit_data} object containing per-field history arrays.
+ * <h3>9 Benchmark queries</h3>
+ * <ol>
+ *   <li>Q1 — Composite PK fetch — {@code _id = "global_pid|global_cid"}</li>
+ *   <li>Q2 — Latest prior_values entry — {@code $slice: -1} on prior_values array</li>
+ *   <li>Q3 — Address by type for known person — {@code $elemMatch} projection</li>
+ *   <li>Q4 — SSN exact match — {@code demographic.ssn}</li>
+ *   <li>Q5 — Compound match — {@code demographic.last_name + date_of_birth}</li>
+ *   <li>Q6 — Partial key — {@code global_pid} only</li>
+ *   <li>Q7 — Rule lookup — {@code demographic.rule_id}</li>
+ *   <li>Q8 — Recent records — {@code mastered_date_ts} in last 30 days</li>
+ *   <li>Q9 — History search — {@code demographic.prior_values[*].ssn}</li>
+ * </ol>
  */
 public class MongoRepository implements AutoCloseable {
 
-    private static final String USERS_COLL = "users";
-    private static final String AUDIT_COLL = "user_audit_logs";
-    private static final int    BATCH_SIZE = 1000;
+    private static final String COLLECTION = "mdm_golden_person";
+    private static final int    BATCH_SIZE = 1_000;
 
     private final MongoClient   client;
     private final MongoDatabase db;
     private final ObjectMapper  mapper = new ObjectMapper();
 
-    /** A sample user _id used for the single-user audit lookup benchmark. */
-    private String sampleUserId;
+    // Sample values captured during seeding — mirrors PostgresRepository
+    private String sampleId;
+    private String sampleGlobalPid;
+    private String sampleLastName;
+    private String sampleDob;
 
-    /**
-     * Primary constructor — accepts a pre-built MongoClient and database name.
-     * Use {@link com.gsv.benchmark.config.AppConfig#buildMongoClient()} and
-     * {@link com.gsv.benchmark.config.AppConfig#getMongoDb()} to supply these.
-     */
     public MongoRepository(MongoClient client, String dbName) {
         this.client = client;
         this.db     = client.getDatabase(dbName);
@@ -54,28 +67,33 @@ public class MongoRepository implements AutoCloseable {
     // ------------------------------------------------------------------
 
     public void dropAndCreateCollections() {
-        db.getCollection(AUDIT_COLL).drop();
-        db.getCollection(USERS_COLL).drop();
-        // Collections are created implicitly on first insert
-        System.out.println("  [Mongo] Collections dropped and ready.");
+        db.getCollection(COLLECTION).drop();
+        System.out.println("  [Mongo] Collection mdm_golden_person dropped and ready.");
     }
 
+    /**
+     * Indexes created for the "indexed" benchmark pass:
+     * <ul>
+     *   <li>{@code _id} — implicit (always present) — Q1, Q2, Q3</li>
+     *   <li>{@code global_pid} — B-tree — Q6</li>
+     *   <li>{@code mastered_date_ts} — B-tree — Q8</li>
+     *   <li>{@code demographic.ssn} — B-tree — Q4</li>
+     *   <li>{@code demographic.last_name + date_of_birth} — compound — Q5</li>
+     *   <li>{@code demographic.rule_id} — B-tree — Q7</li>
+     *   <li>{@code demographic.prior_values.ssn} — multikey — Q9</li>
+     * </ul>
+     */
     public void createIndexes() {
-        MongoCollection<Document> users  = db.getCollection(USERS_COLL);
-        MongoCollection<Document> audits = db.getCollection(AUDIT_COLL);
+        MongoCollection<Document> coll = db.getCollection(COLLECTION);
 
-        // Golden record indexes
-        users.createIndex(Indexes.ascending("subscription_tier"));
-        users.createIndex(Indexes.ascending("age"));
-        users.createIndex(Indexes.ascending("address.city"));
-        users.createIndex(Indexes.ascending("tags"));
-        users.createIndex(Indexes.ascending("billing.credit_score"));
-        users.createIndex(Indexes.ascending("billing.account_balance"));
-
-        // Audit log indexes
-        audits.createIndex(Indexes.ascending("audit_data.subscription_tier.value"));
-        audits.createIndex(Indexes.ascending("audit_data.subscription_tier.timestamp"));
-        audits.createIndex(Indexes.ascending("audit_data.billing_credit_score.value"));
+        coll.createIndex(Indexes.ascending("global_pid"));
+        coll.createIndex(Indexes.ascending("mastered_date_ts"));
+        coll.createIndex(Indexes.ascending("demographic.ssn"));
+        coll.createIndex(Indexes.compoundIndex(
+                Indexes.ascending("demographic.last_name"),
+                Indexes.ascending("demographic.date_of_birth")));
+        coll.createIndex(Indexes.ascending("demographic.rule_id"));
+        coll.createIndex(Indexes.ascending("demographic.prior_values.ssn"));
 
         System.out.println("  [Mongo] Indexes created.");
     }
@@ -85,118 +103,168 @@ public class MongoRepository implements AutoCloseable {
     // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
-    public void seedUsers(List<UserProfile> users) {
-        MongoCollection<Document> coll = db.getCollection(USERS_COLL);
+    public void seedPersons(List<GoldenPerson> persons) {
+        MongoCollection<Document> coll = db.getCollection(COLLECTION);
         List<Document> batch = new ArrayList<>(BATCH_SIZE);
 
-        for (UserProfile u : users) {
-            // Convert POJO → generic Map → Document
-            Map<String, Object> map = mapper.convertValue(u, Map.class);
+        for (GoldenPerson p : persons) {
+            Map<String, Object> map = mapper.convertValue(p, Map.class);
             Document doc = new Document(map);
-            // Use UUID string as _id so it aligns with the PG uuid column
-            doc.put("_id", u.getId());
-            doc.remove("id");   // don't duplicate
+            doc.put("_id", p.getId());
+            doc.remove("id");
             batch.add(doc);
 
             if (batch.size() == BATCH_SIZE) {
                 coll.insertMany(batch, new InsertManyOptions().ordered(false));
                 batch.clear();
             }
-        }
-        if (!batch.isEmpty()) {
-            coll.insertMany(batch, new InsertManyOptions().ordered(false));
-        }
-        if (!users.isEmpty()) sampleUserId = users.get(0).getId();
-        System.out.printf("  [Mongo] Inserted %,d users.%n", users.size());
-    }
 
-    @SuppressWarnings("unchecked")
-    public void seedAuditLogs(List<AuditLog> logs) {
-        MongoCollection<Document> coll = db.getCollection(AUDIT_COLL);
-        List<Document> batch = new ArrayList<>(BATCH_SIZE);
-
-        for (AuditLog log : logs) {
-            // audit_data is a Map<String, List<AuditEntry>> — convert to Document tree
-            Map<String, Object> auditMap = mapper.convertValue(log.getAuditData(), Map.class);
-            Document doc = new Document();
-            doc.put("_id", log.getUserId());          // _id = userId
-            doc.put("audit_data", new Document(auditMap));
-            batch.add(doc);
-
-            if (batch.size() == BATCH_SIZE) {
-                coll.insertMany(batch, new InsertManyOptions().ordered(false));
-                batch.clear();
+            // Capture a sample record that has prior_values — same criterion as PG repo
+            if (sampleId == null
+                    && p.getDemographic().getPriorValues() != null
+                    && !p.getDemographic().getPriorValues().isEmpty()) {
+                sampleId        = p.getId();
+                sampleGlobalPid = p.getGlobalPid();
+                sampleLastName  = p.getDemographic().getLastName();
+                sampleDob       = p.getDemographic().getDateOfBirth();
             }
         }
         if (!batch.isEmpty()) {
             coll.insertMany(batch, new InsertManyOptions().ordered(false));
         }
-        System.out.printf("  [Mongo] Inserted %,d audit logs.%n", logs.size());
+        System.out.printf("  [Mongo] Inserted %,d golden person records.%n", persons.size());
     }
 
     // ------------------------------------------------------------------
-    // Benchmark queries — users (golden record)
+    // Benchmark queries
     // ------------------------------------------------------------------
 
-    /** Q1 — Equality filter on subscription_tier. */
-    public long queryEqualitySubscriptionTier(String tier) {
-        return db.getCollection(USERS_COLL).countDocuments(eq("subscription_tier", tier));
-    }
-
-    /** Q2 — Range filter on age. */
-    public long queryRangeAge(int min, int max) {
-        return db.getCollection(USERS_COLL)
-                 .countDocuments(and(gte("age", min), lte("age", max)));
-    }
-
-    /** Q3 — Range filter on billing.account_balance. */
-    public long queryRangeBalance(double threshold) {
-        return db.getCollection(USERS_COLL)
-                 .countDocuments(gt("billing.account_balance", threshold));
-    }
-
-    /** Q4 — Nested field lookup: address.city. */
-    public long queryNestedCity(String city) {
-        return db.getCollection(USERS_COLL).countDocuments(eq("address.city", city));
-    }
-
-    /** Q5 — Array containment: tags contains a specific tag. */
-    public long queryArrayTags(String tag) {
-        return db.getCollection(USERS_COLL).countDocuments(eq("tags", tag));
-    }
-
-    /** Q6 — Array containment: social.interests contains a specific interest. */
-    public long queryArrayInterests(String interest) {
-        return db.getCollection(USERS_COLL).countDocuments(eq("social.interests", interest));
-    }
-
-    // ------------------------------------------------------------------
-    // Benchmark queries — user_audit_logs
-    // ------------------------------------------------------------------
-
-    /** Q7 — Fetch full audit history document for a single user. */
-    public long queryAuditByUser() {
-        Document doc = db.getCollection(AUDIT_COLL)
-                         .find(eq("_id", sampleUserId))
+    /**
+     * Q1 — Composite PK fetch.
+     * Retrieves the full golden person document by its {@code _id}
+     * ({@code "global_pid|global_cid"}).  Most frequent MDM operation.
+     */
+    public long queryByPrimaryKey() {
+        Document doc = db.getCollection(COLLECTION)
+                         .find(eq("_id", sampleId))
                          .first();
         return doc != null ? 1 : 0;
     }
 
-    /** Q8 — Users who were ever on the given subscription tier. */
-    public long queryAuditEverOnTier(String tier) {
-        return db.getCollection(AUDIT_COLL)
-                 .countDocuments(eq("audit_data.subscription_tier.value", tier));
+    /**
+     * Q2 — Latest prior_values entry (previous winner).
+     * Retrieves only the last element of {@code demographic.prior_values[]}
+     * for a known record using {@code $slice: -1} projection.
+     * Returns the full document with prior_values truncated to its last entry.
+     */
+    public long queryLatestPriorValue() {
+        Document doc = db.getCollection(COLLECTION)
+                         .find(eq("_id", sampleId))
+                         .projection(Projections.slice("demographic.prior_values", -1))
+                         .first();
+        if (doc == null) return 0;
+        // Check that the prior_values field is present and non-empty
+        Document demographic = doc.get("demographic", Document.class);
+        if (demographic == null) return 0;
+        List<?> priorValues = demographic.getList("prior_values", Object.class);
+        return (priorValues != null && !priorValues.isEmpty()) ? 1 : 0;
     }
 
-    /** Q9 — Users whose credit score ever exceeded the given threshold. */
-    public long queryAuditCreditScoreExceeds(int threshold) {
-        return db.getCollection(AUDIT_COLL)
-                 .countDocuments(gt("audit_data.billing_credit_score.value", threshold));
+    /**
+     * Q3 — Address by type for a known person.
+     * Fetches the full document and projects the {@code address} array using
+     * {@code $elemMatch} so only the matching {@code address_type} entry is returned.
+     * Models "full record + targeted address sub-document" in one round-trip.
+     */
+    public long queryAddressByType(String addressType) {
+        Document doc = db.getCollection(COLLECTION)
+                         .find(eq("_id", sampleId))
+                         .projection(Projections.elemMatch("address", eq("address_type", addressType)))
+                         .first();
+        if (doc == null) return 0;
+        List<?> address = doc.getList("address", Object.class);
+        return (address != null && !address.isEmpty()) ? 1 : 0;
+    }
+
+    /**
+     * Q4 — SSN exact match.
+     * Count records whose current {@code demographic.ssn} equals the given value.
+     * Core MDM identity-resolution query.
+     */
+    public long queryBySsn(String ssn) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(eq("demographic.ssn", ssn));
+    }
+
+    /**
+     * Q5 — Compound last_name + date_of_birth lookup.
+     * Count records matching both fields simultaneously.
+     * Classic MDM probabilistic matching when SSN is not available.
+     */
+    public long queryByLastNameAndDob(String lastName, String dob) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(and(
+                         eq("demographic.last_name", lastName),
+                         eq("demographic.date_of_birth", dob)));
+    }
+
+    /**
+     * Q6 — Partial key: {@code global_pid} only.
+     * Find all golden records for a given person ID across all customer contexts.
+     */
+    public long queryByGlobalPid() {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(eq("global_pid", sampleGlobalPid));
+    }
+
+    /**
+     * Q7 — Rule ID lookup.
+     * Count records whose current demographic was mastered by a specific rule.
+     */
+    public long queryByRuleId(String ruleId) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(eq("demographic.rule_id", ruleId));
+    }
+
+    /**
+     * Q8 — Records mastered in the last 30 days.
+     * Count recently mastered records for downstream sync and change-detection.
+     * String comparison on ISO-8601 works lexicographically; B-tree index applies.
+     */
+    public long queryMasteredLast30Days(String cutoffIso) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(gt("mastered_date_ts", cutoffIso));
+    }
+
+    /**
+     * Q9 — History: prior demographic SSN search.
+     * Count records where any entry in {@code demographic.prior_values[*]} has
+     * a matching {@code ssn}.  Multikey index on {@code demographic.prior_values.ssn}.
+     */
+    public long queryPriorSsn(String ssn) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(eq("demographic.prior_values.ssn", ssn));
+    }
+
+    /**
+     * Q10 — Range query: records mastered between two timestamps.
+     * Count records whose {@code mastered_date_ts} falls within a start–end window.
+     * ISO-8601 strings sort lexicographically so the B-tree index on
+     * {@code mastered_date_ts} covers both bounds.
+     */
+    public long queryMasteredBetween(String startIso, String endIso) {
+        return db.getCollection(COLLECTION)
+                 .countDocuments(and(
+                         gte("mastered_date_ts", startIso),
+                         lte("mastered_date_ts", endIso)));
     }
 
     // ------------------------------------------------------------------
 
-    public String getSampleUserId() { return sampleUserId; }
+    public String getSampleId()        { return sampleId; }
+    public String getSampleGlobalPid() { return sampleGlobalPid; }
+    public String getSampleLastName()  { return sampleLastName; }
+    public String getSampleDob()       { return sampleDob; }
 
     @Override
     public void close() {

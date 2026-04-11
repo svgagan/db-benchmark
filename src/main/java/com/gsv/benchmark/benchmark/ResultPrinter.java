@@ -23,7 +23,7 @@ public class ResultPrinter {
         String[] databases = {"PostgreSQL", "MongoDB"};
 
         System.out.println();
-        printTitle("BENCHMARK RESULTS  —  100,000 users · 100,000 audit logs · 500 iterations each");
+        printTitle("BENCHMARK RESULTS  —  100,000 MDM golden records · 500 iterations each");
         System.out.println();
 
         for (String db : databases) {
