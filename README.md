@@ -317,22 +317,57 @@ To wipe data and start fresh:
 docker compose down -v && docker compose up -d
 ```
 
-### Prod (RDS + DocumentDB)
+### Prod (RDS + DocumentDB) — via Docker
 
-```bash
-# Set env vars
-export PG_HOST=mydb.xxxx.us-east-1.rds.amazonaws.com
-export PG_USER=bench_iam_user
-export AWS_REGION=us-east-1
-export PG_SSL_CA_FILE=/path/to/global-bundle.pem
-export MONGO_HOST=mydb.xxxx.us-east-1.docdb.amazonaws.com
-export MONGO_USER=docdbuser
-export MONGO_PASSWORD=secret
-export MONGO_TLS_CA_FILE=/path/to/global-bundle.pem
+No Java or Maven install needed. Docker builds and runs everything inside a container.
 
-# Run
-java -Dbenchmark.profile=prod -jar target/db-benchmark-1.0.0.jar
+**1 — Build the image**
+
+```powershell
+docker build -t db-benchmark .
 ```
+
+**2 — Run**
+
+PowerShell (Windows):
+```powershell
+docker run --rm `
+  -e BENCHMARK_PROFILE=prod `
+  -e PG_HOST=mydb.xxxx.us-east-1.rds.amazonaws.com `
+  -e PG_USER=bench_iam_user `
+  -e AWS_REGION=us-east-1 `
+  -e AWS_ACCESS_KEY_ID=<your-access-key-id> `
+  -e AWS_SECRET_ACCESS_KEY=<your-secret-access-key> `
+  -e PG_SSL_CA_FILE=/certs/global-bundle.pem `
+  -e MONGO_HOST=mydb.xxxx.us-east-1.docdb.amazonaws.com `
+  -e MONGO_USER=docdbuser `
+  -e MONGO_PASSWORD=secret `
+  -e MONGO_TLS_CA_FILE=/certs/global-bundle.pem `
+  -v C:\path\to\global-bundle.pem:/certs/global-bundle.pem `
+  db-benchmark
+```
+
+bash / macOS / Linux:
+```bash
+docker run --rm \
+  -e BENCHMARK_PROFILE=prod \
+  -e PG_HOST=mydb.xxxx.us-east-1.rds.amazonaws.com \
+  -e PG_USER=bench_iam_user \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=<your-access-key-id> \
+  -e AWS_SECRET_ACCESS_KEY=<your-secret-access-key> \
+  -e PG_SSL_CA_FILE=/certs/global-bundle.pem \
+  -e MONGO_HOST=mydb.xxxx.us-east-1.docdb.amazonaws.com \
+  -e MONGO_USER=docdbuser \
+  -e MONGO_PASSWORD=secret \
+  -e MONGO_TLS_CA_FILE=/certs/global-bundle.pem \
+  -v /path/to/global-bundle.pem:/certs/global-bundle.pem \
+  db-benchmark
+```
+
+> `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are the credentials for the IAM
+> user that has `rds-db:connect` permission. These are used only to generate the
+> short-lived RDS auth token — no hardcoded DB passwords.
 
 ---
 
@@ -410,6 +445,7 @@ mvn clean                     # remove built JAR
 ```
 db-benchmark/
 ├── docker-compose.yml
+├── Dockerfile                                # Multi-stage build (Maven + JRE 17)
 ├── pom.xml                                   # Java 17, AWS SDK BOM, fat-JAR
 ├── README.md
 ├── executive-summary-v3.docx                 # Word doc: PG vs DocumentDB analysis + architecture comparison
