@@ -193,19 +193,21 @@ Results from a local run on Apple M-series · Docker Compose · 100,000 records 
 
 ### PostgreSQL
 
+Table lives in `core_data_db` database under the `benchmark` schema.
+
 ```sql
 -- Primary key (implicit, always present) — Q1, Q2, Q3
 -- Relational column indexes
-CREATE INDEX idx_mgr_global_pid  ON mdm_golden_record (global_pid);          -- Q6
-CREATE INDEX idx_mgr_mastered_ts ON mdm_golden_record (mastered_date_ts);    -- Q8, Q10
+CREATE INDEX idx_mgr_global_pid  ON benchmark.mdm_golden_record (global_pid);          -- Q6
+CREATE INDEX idx_mgr_mastered_ts ON benchmark.mdm_golden_record (mastered_date_ts);    -- Q8, Q10
 -- GIN: @> containment and jsonb_path_exists — Q3, Q9
-CREATE INDEX idx_mgr_gin ON mdm_golden_record USING GIN (golden_record jsonb_path_ops);
+CREATE INDEX idx_mgr_gin ON benchmark.mdm_golden_record USING GIN (golden_record jsonb_path_ops);
 -- Expression indexes on scalar JSONB fields
-CREATE INDEX idx_mgr_ssn      ON mdm_golden_record ((golden_record->'demographic'->>'ssn'));     -- Q4
-CREATE INDEX idx_mgr_name_dob ON mdm_golden_record                                               -- Q5
+CREATE INDEX idx_mgr_ssn      ON benchmark.mdm_golden_record ((golden_record->'demographic'->>'ssn'));     -- Q4
+CREATE INDEX idx_mgr_name_dob ON benchmark.mdm_golden_record                                               -- Q5
     ((golden_record->'demographic'->>'last_name'),
      (golden_record->'demographic'->>'date_of_birth'));
-CREATE INDEX idx_mgr_rule_id  ON mdm_golden_record ((golden_record->'demographic'->>'rule_id')); -- Q7
+CREATE INDEX idx_mgr_rule_id  ON benchmark.mdm_golden_record ((golden_record->'demographic'->>'rule_id')); -- Q7
 ```
 
 ### MongoDB / DocumentDB
@@ -217,6 +219,48 @@ db.mdm_golden_person.createIndex({ "demographic.ssn": 1 })                      
 db.mdm_golden_person.createIndex({ "demographic.last_name": 1, "demographic.date_of_birth": 1}) // Q5
 db.mdm_golden_person.createIndex({ "demographic.rule_id": 1 })                                  // Q7
 db.mdm_golden_person.createIndex({ "demographic.prior_values.ssn": 1 })                         // Q9
+```
+
+---
+
+## RDS IAM User Setup (prod only)
+
+Run the following as the RDS **master user** once before the first prod run.
+The app creates the schema and table automatically — these grants just ensure
+the IAM user has permission to do so.
+
+```sql
+-- 1. Create the user (no password — IAM token is the credential)
+CREATE USER bench_iam_user;
+
+-- 2. Allow IAM token authentication
+GRANT rds_iam TO bench_iam_user;
+
+-- 3. Allow connection to the database
+GRANT CONNECT ON DATABASE core_data_db TO bench_iam_user;
+
+-- 4. Grant schema usage (schema is created by the app on first run)
+GRANT USAGE ON SCHEMA benchmark TO bench_iam_user;
+
+-- 5. Grant read/write on all current and future tables in the schema
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA benchmark TO bench_iam_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA benchmark
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bench_iam_user;
+
+-- 6. Grant sequence usage (needed for default timestamp columns)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA benchmark TO bench_iam_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA benchmark
+    GRANT USAGE, SELECT ON SEQUENCES TO bench_iam_user;
+```
+
+The EC2 / ECS instance role also needs this IAM policy:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "rds-db:connect",
+  "Resource": "arn:aws:rds-db:<region>:<account-id>:dbuser:<db-resource-id>/bench_iam_user"
+}
 ```
 
 ---
@@ -302,7 +346,8 @@ All values overridable by environment variable (`PG_HOST` overrides `pg.host`, e
 |----------|---------|---------|
 | `pg.host` | `localhost` | `PG_HOST` |
 | `pg.port` | `5432` | `PG_PORT` |
-| `pg.db` | `benchmark` | `PG_DB` |
+| `pg.db` | `core_data_db` | `PG_DB` |
+| `pg.schema` | `benchmark` | `PG_SCHEMA` |
 | `pg.user` | `bench` | `PG_USER` |
 | `pg.password` | `bench` | `PG_PASSWORD` |
 | `mongo.host` | `localhost` | `MONGO_HOST` |
@@ -317,11 +362,14 @@ All values overridable by environment variable (`PG_HOST` overrides `pg.host`, e
 | Property | Required | Env var | Notes |
 |----------|----------|---------|-------|
 | `pg.host` | Yes | `PG_HOST` | RDS endpoint |
+| `pg.db` | No | `PG_DB` | Default: `core_data_db` |
+| `pg.schema` | No | `PG_SCHEMA` | Default: `benchmark`; created automatically if absent |
 | `pg.user` | Yes | `PG_USER` | Must have `rds_iam` role granted |
 | `aws.region` | Yes | `AWS_REGION` | Must match RDS region |
 | `pg.ssl.mode` | No | `PG_SSL_MODE` | Default: `verify-full` |
 | `pg.ssl.ca-file` | No | `PG_SSL_CA_FILE` | Path to `global-bundle.pem` |
 | `mongo.host` | Yes | `MONGO_HOST` | DocumentDB cluster endpoint |
+| `mongo.db` | No | `MONGO_DB` | Default: `benchmark`; created automatically if absent |
 | `mongo.user` | Yes | `MONGO_USER` | DocumentDB username |
 | `mongo.password` | Yes | `MONGO_PASSWORD` | Source from Secrets Manager in pipelines |
 | `mongo.tls.ca-file` | No | `MONGO_TLS_CA_FILE` | Path to `global-bundle.pem` |
@@ -364,7 +412,7 @@ db-benchmark/
 ├── docker-compose.yml
 ├── pom.xml                                   # Java 17, AWS SDK BOM, fat-JAR
 ├── README.md
-├── executive-summary-v2.docx                 # Word doc: PG vs DocumentDB analysis
+├── executive-summary-v3.docx                 # Word doc: PG vs DocumentDB analysis + architecture comparison
 └── src/main/
     ├── resources/
     │   ├── schema.sql                        # DDL: mdm_golden_record table

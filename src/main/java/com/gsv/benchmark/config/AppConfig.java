@@ -84,8 +84,11 @@ public class AppConfig {
         String db   = get("pg.db", "benchmark");
         String user = require("pg.user");
 
+        String schema = getPgSchema();
+
         if (profile == Profile.LOCAL) {
-            String url = String.format("jdbc:postgresql://%s:%d/%s", host, port, db);
+            String url = String.format(
+                "jdbc:postgresql://%s:%d/%s?currentSchema=%s", host, port, db, schema);
             return DriverManager.getConnection(url, user, require("pg.password"));
         }
 
@@ -94,8 +97,8 @@ public class AppConfig {
         String token  = RdsIamTokenProvider.generateToken(host, port, user, region);
 
         String url = String.format(
-            "jdbc:postgresql://%s:%d/%s?ssl=true&sslmode=%s",
-            host, port, db, get("pg.ssl.mode", "verify-full"));
+            "jdbc:postgresql://%s:%d/%s?ssl=true&sslmode=%s&currentSchema=%s",
+            host, port, db, get("pg.ssl.mode", "verify-full"), schema);
 
         // Optional: path to the RDS CA bundle for sslmode=verify-full
         String caFile = get("pg.ssl.ca-file", "");
@@ -158,6 +161,7 @@ public class AppConfig {
     public int     getUserCount()   { return Integer.parseInt(get("benchmark.user-count", "100000")); }
     public int     getWarmup()      { return Integer.parseInt(get("benchmark.warmup",      "5")); }
     public int     getIterations()  { return Integer.parseInt(get("benchmark.iterations",  "500")); }
+    public String  getPgSchema()    { return get("pg.schema", "benchmark"); }
     public String  getMongoDb()     { return get("mongo.db", "benchmark"); }
     public Profile getProfile()     { return profile; }
 

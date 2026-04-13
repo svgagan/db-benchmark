@@ -68,7 +68,10 @@ public class MongoRepository implements AutoCloseable {
 
     public void dropAndCreateCollections() {
         db.getCollection(COLLECTION).drop();
-        System.out.println("  [Mongo] Collection mdm_golden_person dropped and ready.");
+        // Explicitly create the collection — this also creates the database if it does not exist
+        db.createCollection(COLLECTION);
+        System.out.printf("  [Mongo] Database '%s', collection '%s' created.%n",
+                db.getName(), COLLECTION);
     }
 
     /**

@@ -42,6 +42,7 @@ public class PostgresRepository implements AutoCloseable {
     private static final String TABLE = "mdm_golden_record";
 
     private final Connection   conn;
+    private final String       schema;
     private final ObjectMapper mapper = new ObjectMapper();
 
     // Sample values captured during seeding — used by Q1 / Q2 / Q3 / Q6
@@ -52,8 +53,9 @@ public class PostgresRepository implements AutoCloseable {
     private String sampleLastName;
     private String sampleDob;
 
-    public PostgresRepository(Connection conn) throws SQLException {
-        this.conn = conn;
+    public PostgresRepository(Connection conn, String schema) throws SQLException {
+        this.conn   = conn;
+        this.schema = schema;
         this.conn.setAutoCommit(false);
     }
 
@@ -62,15 +64,21 @@ public class PostgresRepository implements AutoCloseable {
     // ------------------------------------------------------------------
 
     public void dropAndCreateTables() throws SQLException, IOException {
+        // Ensure schema exists (idempotent)
         try (Statement st = conn.createStatement()) {
-            st.execute("DROP TABLE IF EXISTS " + TABLE);
+            st.execute("CREATE SCHEMA IF NOT EXISTS " + schema);
+            conn.commit();
         }
-        String schema;
+        // Drop the table (schema-qualified so it resolves regardless of search_path state)
+        try (Statement st = conn.createStatement()) {
+            st.execute("DROP TABLE IF EXISTS " + schema + "." + TABLE);
+        }
+        String ddl;
         try (InputStream is = getClass().getResourceAsStream("/schema.sql")) {
-            schema = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            ddl = new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
         try (Statement st = conn.createStatement()) {
-            for (String sql : schema.split(";")) {
+            for (String sql : ddl.split(";")) {
                 String trimmed = sql.lines()
                         .filter(line -> !line.stripLeading().startsWith("--"))
                         .reduce("", (a, b) -> a + "\n" + b)
@@ -79,7 +87,7 @@ public class PostgresRepository implements AutoCloseable {
             }
         }
         conn.commit();
-        System.out.println("  [PG] Table mdm_golden_record created.");
+        System.out.printf("  [PG] Schema '%s' ready. Table mdm_golden_record created.%n", schema);
     }
 
     /**

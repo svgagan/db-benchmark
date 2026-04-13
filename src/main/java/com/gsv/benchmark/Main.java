@@ -77,7 +77,7 @@ public class Main {
                 System.currentTimeMillis() - t0, persons.size());
 
         // ── 2. Open DB connections ─────────────────────────────────────
-        try (PostgresRepository pg    = new PostgresRepository(config.buildPostgresConnection());
+        try (PostgresRepository pg    = new PostgresRepository(config.buildPostgresConnection(), config.getPgSchema());
              MongoRepository    mongo = new MongoRepository(config.buildMongoClient(), config.getMongoDb())) {
 
             // ── 3. Schema setup ────────────────────────────────────────
