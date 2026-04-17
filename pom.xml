@@ -12,21 +12,7 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <aws.sdk.version>2.25.60</aws.sdk.version>
     </properties>
-
-    <!-- AWS SDK v2 BOM — manages all aws sdk module versions centrally -->
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>software.amazon.awssdk</groupId>
-                <artifactId>bom</artifactId>
-                <version>${aws.sdk.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <!-- PostgreSQL JDBC Driver -->
@@ -50,16 +36,11 @@
             <version>2.17.1</version>
         </dependency>
 
-        <!-- AWS SDK: RDS utilities (IAM auth token generation for RDS PostgreSQL) -->
+        <!-- HikariCP — JDBC connection pool (required for multi-threaded PG access) -->
         <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>rds</artifactId>
-        </dependency>
-
-        <!-- AWS SDK: default credential chain (IAM role, env vars, ~/.aws/credentials) -->
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>auth</artifactId>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>5.1.0</version>
         </dependency>
 
         <!-- Logging -->

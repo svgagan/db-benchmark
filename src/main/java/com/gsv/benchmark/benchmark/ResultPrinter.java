@@ -23,7 +23,7 @@ public class ResultPrinter {
         String[] databases = {"PostgreSQL", "MongoDB"};
 
         System.out.println();
-        printTitle("BENCHMARK RESULTS  —  100,000 MDM golden records · 500 iterations each");
+        printTitle("BENCHMARK RESULTS  —  MDM golden records · sequential queries");
         System.out.println();
 
         for (String db : databases) {
@@ -132,6 +132,39 @@ public class ResultPrinter {
         int left = pad / 2;
         int right = pad - left;
         return " ".repeat(left) + s + " ".repeat(right);
+    }
+
+    // ------------------------------------------------------------------
+    // Stress test results
+    // ------------------------------------------------------------------
+
+    /**
+     * Prints the concurrent stress test summary for both databases.
+     */
+    public static void printStressResults(StressTestResult pg, StressTestResult mongo) {
+        System.out.println();
+        printTitle("CONCURRENT STRESS TEST RESULTS  —  " + pg.getDurationSeconds() + "s wall clock");
+        System.out.println();
+
+        System.out.printf("  %-14s │ %12s │ %10s │ %9s │ %9s │ %9s │ %8s%n",
+                "Database", "ops/sec", "Total ops", "Avg ms", "P50 ms", "P95 ms", "P99 ms");
+        System.out.println("  " + "─".repeat(84));
+
+        for (StressTestResult r : new StressTestResult[]{pg, mongo}) {
+            System.out.printf("  %-14s │ %12.1f │ %,10d │ %9.3f │ %9.3f │ %9.3f │ %9.3f%n",
+                    r.getDatabase(),
+                    r.opsPerSecond(),
+                    r.getTotalOps(),
+                    r.avgMs(),
+                    r.p50Ms(),
+                    r.p95Ms(),
+                    r.p99Ms());
+            if (r.getErrors() > 0) {
+                System.out.printf("  %-14s   *** %,d errors during stress run ***%n",
+                        "", r.getErrors());
+            }
+        }
+        System.out.println();
     }
 
     private static void printTitle(String title) {
